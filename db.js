@@ -104,6 +104,18 @@ async function getAllChatsForUser(userId) {
 }
 
 // ─── USERS ─────────────────────────────────────────────────
+async function getUserById(userId) {
+  return User.findOne({ user_id: Number(userId) }).lean();
+}
+
+async function countUsers() {
+  return User.countDocuments().lean();
+}
+
+async function countPosts() {
+  return Post.countDocuments().lean();
+}
+
 async function upsertUser(user) {
   await User.findOneAndUpdate(
     { user_id: user.id },
@@ -142,6 +154,9 @@ module.exports = {
   setChatOwner,
   removeAdminChat,
   getAllChatsForUser,
+  getUserById,
+  countUsers,
+  countPosts,
   upsertUser,
   savePost,
   AdminChat,

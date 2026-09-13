@@ -11,6 +11,18 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
+// ─── ADMIN (faqat statistika uchun) ─────────────────────────
+const ADMIN_IDS = new Set(
+  (process.env.ADMIN_CHAT_ID || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+function isAdmin(userId) {
+  return ADMIN_IDS.has(String(userId));
+}
+
 // ─── SESSIYA — har bir foydalanuvchi uchun alohida ─────────
 const sessions = new Map();
 
@@ -105,12 +117,16 @@ function escapeHtml(text) {
 }
 
 // ─── MENU (rangsiz boshqaruv tugmalari) ────────────────────
-function startMenu() {
-  return Markup.inlineKeyboard([
+function startMenu(ctx) {
+  const rows = [
     [Markup.button.callback("✍️ Post yaratish", "cmd_post")],
     [Markup.button.callback("📋 Kanallarim", "cmd_channels")],
     [Markup.button.callback("📖 Yordam", "cmd_help")],
-  ]);
+  ];
+  if (isAdmin(ctx?.from?.id)) {
+    rows.push([Markup.button.callback("📊 Statistika", "cmd_stats")]);
+  }
+  return Markup.inlineKeyboard(rows);
 }
 
 // Oldindan ko'rish va tahrirlash menyusi
@@ -170,14 +186,45 @@ async function claimOwnerlessChats(ctx) {
   }
 }
 
+// Yangi foydalanuvchi kelganida admin'e bildirishnoma yuborish
+async function notifyAdminNewUser(ctx) {
+  const from = ctx.from;
+  const name = [from.first_name, from.last_name].filter(Boolean).join(" ") || "—";
+  const username = from.username ? "@" + from.username : "yo'q";
+  const timeStr = new Date().toLocaleString("uz-Latn-UZ", {
+    timeZone: "Asia/Tashkent",
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+
+  const msg =
+    `🆕 <b>Yangi foydalanuvchi!</b>\n\n` +
+    `👤 Ism: <b>${escapeHtml(name)}</b>\n` +
+    `🔗 Username: ${escapeHtml(username)}\n` +
+    `🆔 ID: <code>${from.id}</code>\n` +
+    `📅 Vaqt: ${escapeHtml(timeStr)}`;
+
+  for (const adminId of ADMIN_IDS) {
+    try {
+      await bot.telegram.sendMessage(adminId, msg, { parse_mode: "HTML" });
+    } catch (e) {
+      console.error("Admin bildirishnoma jo'natishda xatolik:", e.message);
+    }
+  }
+}
+
 // ═══════════════════════════════════════════════════════════
 //  /START — har bir yangi akkaunt o'z ID si bilan ro'yxatga
 //  olinadi va faqat O'Z kanallarini ko'radi
 // ═══════════════════════════════════════════════════════════
 bot.start(async (ctx) => {
   resetSession(ctx.from.id);
+  const isNewUser = !(await db.getUserById(ctx.from.id).catch(() => null));
   await db.upsertUser(ctx.from).catch(() => {});
   const name = ctx.from.first_name || "Foydalanuvchi";
+
+  // Yangi foydalanuvchi bo'lsa admin'ga xabar ketadi
+  if (isNewUser) await notifyAdminNewUser(ctx);
 
   // Bot admin bo'lgan kanallardan shu USER ga tegishlilarini bog'lash
   await claimOwnerlessChats(ctx);
@@ -199,7 +246,7 @@ bot.start(async (ctx) => {
   ctx.replyWithHTML(
     `👋 Salom, <b>${escapeHtml(name)}</b>! Bu bot bilan o'z kanal va guruhingizga rangli tugmali xabarlar yuboring. 🚀\n\n` +
     `📋 Sizning kanallaringiz:${adminList}`,
-    startMenu()
+    startMenu(ctx)
   );
 });
 
@@ -207,6 +254,7 @@ bot.start(async (ctx) => {
 bot.action("cmd_post", (ctx) => { ctx.answerCbQuery(); startPost(ctx); });
 bot.action("cmd_channels", (ctx) => { ctx.answerCbQuery(); return showChannels(ctx); });
 bot.action("cmd_help", (ctx) => { ctx.answerCbQuery(); return showHelp(ctx); });
+bot.action("cmd_stats", (ctx) => { ctx.answerCbQuery(); return showStats(ctx); });
 
 // ═══════════════════════════════════════════════════════════
 //  /HELP
@@ -228,6 +276,45 @@ function showHelp(ctx) {
 bot.help((ctx) => showHelp(ctx));
 
 // ═══════════════════════════════════════════════════════════
+//  /STATS — faqat admin uchun statistika
+// ═══════════════════════════════════════════════════════════
+async function showStats(ctx) {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.replyWithHTML("⛔ Bu bo'lim faqat admin uchun. 🔒", startMenu(ctx));
+  }
+
+  const totalUsers = await db.countUsers().catch(() => 0);
+  const totalPosts = await db.countPosts().catch(() => 0);
+  const chats = await db.getAllAdminChats().catch(() => []);
+
+  const channels = chats.filter((c) => c.type === "channel");
+  const groups = chats.filter((c) => c.type === "group" || c.type === "supergroup");
+
+  let list = "";
+  for (const c of chats) {
+    let owner = "";
+    if (c.owner_id) {
+      const u = await db.getUserById(c.owner_id).catch(() => null);
+      if (u && u.username) owner = ` (@${u.username})`;
+    }
+    list += `  • <b>${escapeHtml(c.title || c.id)}</b> — ${chatTypeName(c.type)}${owner}\n`;
+  }
+  if (!list) list = "  (bot hali hech qanday kanal/guruhga qo'shilmagan)";
+
+  const msg =
+    `📊 <b>Bot statistikasi</b>\n\n` +
+    `👥 Foydalanuvchilar: <b>${totalUsers}</b> ta\n` +
+    `📝 Yuborilgan postlar: <b>${totalPosts}</b> ta\n` +
+    `📣 Kanallar: <b>${channels.length}</b> ta\n` +
+    `👥 Guruhlar: <b>${groups.length}</b> ta\n\n` +
+    `💬 <b>Bot o'rnatilgan chatlar:</b>\n${list}`;
+
+  return ctx.replyWithHTML(msg, startMenu(ctx));
+}
+
+bot.command("stats", (ctx) => showStats(ctx));
+
+// ═══════════════════════════════════════════════════════════
 //  /CHANNELS — faqat o'z kanallari
 // ═══════════════════════════════════════════════════════════
 async function showChannels(ctx) {
@@ -238,7 +325,7 @@ async function showChannels(ctx) {
     return ctx.replyWithHTML(
       `📭 Kanallaringiz hozircha yo'q.\n\n` +
       `Botni o'z kanal yoki guruhingizga admin qiling — bot uni avtomatik aniqlab, sizning ro'yxatingizga qo'shib oladi. ✅`,
-      startMenu()
+      startMenu(ctx)
     );
   }
 
@@ -252,7 +339,7 @@ async function showChannels(ctx) {
   ctx.replyWithHTML(
     `📋 Sizning kanallaringiz:\n${list}\n\n` +
     `🔒 Boshqalar hech qanday ko'rmaydi — hamma ma'lumot faqat sizga.`,
-    startMenu()
+    startMenu(ctx)
   );
 }
 
@@ -625,7 +712,7 @@ async function renderChatPicker(ctx) {
     return ctx.replyWithHTML(
       `📭 Kanallaringiz topilmadi.\n\n` +
       `Botni o'z kanal yoki guruhingizga admin qilib, qaytadan bosing. ✅`,
-      startMenu()
+      startMenu(ctx)
     );
   }
 
@@ -840,7 +927,7 @@ bot.action("confirm_send", async (ctx) => {
     });
   }
 
-  return ctx.replyWithHTML(result, startMenu());
+  return ctx.replyWithHTML(result, startMenu(ctx));
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -849,7 +936,7 @@ bot.action("confirm_send", async (ctx) => {
 bot.action("cancel", (ctx) => {
   ctx.answerCbQuery("Bekor qilindi");
   resetSession(ctx.from.id);
-  ctx.replyWithHTML(`❌ Post yaratish bekor qilindi.`, startMenu());
+  ctx.replyWithHTML(`❌ Post yaratish bekor qilindi.`, startMenu(ctx));
 });
 
 bot.action(/^noop_/, (ctx) => ctx.answerCbQuery(""));

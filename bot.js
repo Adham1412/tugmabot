@@ -1032,7 +1032,7 @@ async function main() {
 
   async function shutdown() {
     bot.stop("shutdown");
-    await db.mongoose.disconnect().catch(() => {});
+    await db.close().catch(() => {});
     process.exit(0);
   }
 

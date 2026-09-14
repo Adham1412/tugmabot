@@ -442,6 +442,28 @@ bot.action(/^count:(\d+)$/, (ctx) => {
 // ═══════════════════════════════════════════════════════════
 //  MATN QABUL QILISH
 // ═══════════════════════════════════════════════════════════
+
+// Rang tanlash tugmalarini jo'natish (yangi / tahrirlash rejimida)
+function sendColorPrompt(ctx, s) {
+  const btnText =
+    s.step === "wait_edit_btn_color"
+      ? s.buttons[s.editingIndex]?.text || ""
+      : s.currentButton?.text || "";
+  return ctx.replyWithHTML(
+    `🎨 "${escapeHtml(btnText)}" tugmasi rangini tanlang:`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔴 Qizil", callback_data: "clr:red", style: "danger" }],
+          [{ text: "🔵 Ko'k", callback_data: "clr:blue", style: "primary" }],
+          [{ text: "🟢 Yashil", callback_data: "clr:green", style: "success" }],
+          [{ text: "⬜️ Rangsiz", callback_data: "clr:none" }],
+        ],
+      },
+    }
+  );
+}
+
 bot.on("text", (ctx) => {
   const text = ctx.message.text;
   const s = getSession(ctx.from.id);
@@ -482,7 +504,10 @@ bot.on("text", (ctx) => {
     return ctx.replyWithHTML(
       `Tugma uchun havola (URL) kiriting:\n` +
       `Joriy: ${b.url || "(yo'q)"}\n` +
-      `O'zgartirmaslik uchun: skip ⏭`
+      `O'zgartirmaslik uchun tugmani bosing. ⏭`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback("⏭ Joriy havolani qoldirish", "skip_edit_url")],
+      ])
     );
   }
 
@@ -495,23 +520,11 @@ bot.on("text", (ctx) => {
         new URL(text);
         b.url = text;
       } catch {
-        return ctx.replyWithHTML(`❌ Havola noto'g'ri. Qaytadan yoki skip deb yozing.`);
+        return ctx.replyWithHTML(`❌ Havola noto'g'ri. Qaytadan kiriting.`);
       }
     }
     s.step = "wait_edit_btn_color";
-    return ctx.replyWithHTML(
-      `🎨 "${escapeHtml(b.text)}" tugmasi rangini tanlang:`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "🔴 Qizil", callback_data: "clr:red", style: "danger" }],
-            [{ text: "🔵 Ko'k", callback_data: "clr:blue", style: "primary" }],
-            [{ text: "🟢 Yashil", callback_data: "clr:green", style: "success" }],
-            [{ text: "⬜️ Rangsiz", callback_data: "clr:none" }],
-          ],
-        },
-      }
-    );
+    return sendColorPrompt(ctx, s);
   }
 
   if (s.step === "wait_button_text") {
@@ -521,7 +534,10 @@ bot.on("text", (ctx) => {
     return ctx.replyWithHTML(
       `🔗 "${escapeHtml(text)}" tugmasi uchun havola (URL) kiriting:\n\n` +
       `Masalan: https://t.me/kanal_nomi 🌐\n` +
-      `Havola kerak bo'lmasa: skip deb yozing. ⏭`
+      `Havola kerak bo'lmasa tugmani bosing. ⏭`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback("⏭ Havolasiz davom etish", "skip_url")],
+      ])
     );
   }
 
@@ -531,23 +547,11 @@ bot.on("text", (ctx) => {
       s.currentButton.url = null;
     } else {
       try { new URL(text); s.currentButton.url = text; } catch {
-        return ctx.replyWithHTML(`❌ Havola noto'g'ri. Qaytadan yoki skip deb yozing.`);
+        return ctx.replyWithHTML(`❌ Havola noto'g'ri. Qaytadan kiriting.`);
       }
     }
     s.step = "wait_button_color";
-    ctx.replyWithHTML(
-      `🎨 "${escapeHtml(s.currentButton.text)}" tugmasi rangini tanlang:`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "🔴 Qizil", callback_data: "clr:red", style: "danger" }],
-            [{ text: "🔵 Ko'k", callback_data: "clr:blue", style: "primary" }],
-            [{ text: "🟢 Yashil", callback_data: "clr:green", style: "success" }],
-            [{ text: "⬜️ Rangsiz", callback_data: "clr:none" }],
-          ],
-        },
-      }
-    );
+    return sendColorPrompt(ctx, s);
   }
 
   if (s.step === "wait_chat_id") {
@@ -557,6 +561,56 @@ bot.on("text", (ctx) => {
     s.step = "confirm_send";
     showConfirm(ctx, s);
   }
+});
+
+// ═══════════════════════════════════════════════════════════
+//  SKIP TUGMALARI
+// ═══════════════════════════════════════════════════════════
+
+// Yangi tugma: havola kiritmasdan o'tish
+bot.action("skip_url", (ctx) => {
+  ctx.answerCbQuery();
+  const s = getSession(ctx.from.id);
+  if (s.step !== "wait_button_url") return;
+  s.currentButton.url = null;
+  s.step = "wait_button_color";
+  return sendColorPrompt(ctx, s);
+});
+
+// Tahrirlash: joriy havolani qoldirish
+bot.action("skip_edit_url", (ctx) => {
+  ctx.answerCbQuery();
+  const s = getSession(ctx.from.id);
+  if (s.step !== "wait_edit_btn_url" || !s.buttons[s.editingIndex]) return;
+  s.step = "wait_edit_btn_color";
+  return sendColorPrompt(ctx, s);
+});
+
+// Post matnini tahrirlashda eski matnni qoldirish
+bot.action("skip_edit_text", (ctx) => {
+  ctx.answerCbQuery();
+  const s = getSession(ctx.from.id);
+  if (s.step !== "wait_edit_text") return;
+  s.step = null;
+  return showPreview(ctx, s);
+});
+
+// Tugma matnini tahrirlashda joriy matnni qoldirish
+bot.action("skip_edit_btn_text", (ctx) => {
+  ctx.answerCbQuery();
+  const s = getSession(ctx.from.id);
+  if (s.step !== "wait_edit_btn_text") return;
+  const b = s.buttons[s.editingIndex];
+  if (!b) return ctx.replyWithHTML(`⚠️ Tugma topilmadi.`);
+  s.step = "wait_edit_btn_url";
+  return ctx.replyWithHTML(
+    `Tugma uchun havola (URL) kiriting:\n` +
+    `Joriy: ${b.url || "(yo'q)"}\n` +
+    `O'zgartirmaslik uchun tugmani bosing. ⏭`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("⏭ Joriy havolani qoldirish", "skip_edit_url")],
+    ])
+  );
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -686,7 +740,10 @@ bot.action("edit_text", (ctx) => {
   ctx.replyWithHTML(
     `📝 <b>Yangi post matnini kiriting:</b>\n\n` +
     `Joriy matn:\n${escapeHtml(s.postText || "(matn yo'q)")}\n\n` +
-    `Eski matnni qoldirish uchun: skip`
+    `Eski matnni qoldirish uchun tugmani bosing. ⏭`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("⏭ Eski matnni qoldirish", "skip_edit_text")],
+    ])
   );
 });
 
@@ -719,7 +776,10 @@ bot.action(/^edit_btn:(\d+)$/, (ctx) => {
   ctx.replyWithHTML(
     `🔘 <b>${idx + 1}-tugmani tahrirlash</b>\n\n` +
     `Joriy matn: <b>${escapeHtml(b.text)}</b>\n\n` +
-    `Yangi matn kiriting yoki skip deb yozing:`
+    `Yangi matn kiriting yoki tugmani bosing. ⏭`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("⏭ Joriy matnni qoldirish", "skip_edit_btn_text")],
+    ])
   );
 });
 

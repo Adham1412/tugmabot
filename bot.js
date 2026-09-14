@@ -886,7 +886,7 @@ bot.action("confirm_send", async (ctx) => {
       okList.push(chatId);
     } catch (err) {
       console.error(`Yuborishda xatolik (${chatId}):`, err.message);
-      failList.push(chatId);
+      failList.push({ chatId, reason: err.message || "noma'lum xato" });
     }
   }
 
@@ -922,8 +922,8 @@ bot.action("confirm_send", async (ctx) => {
   });
   if (failList.length) {
     result += `\n❌ Yuborilmagan (${failList.length}):\n`;
-    failList.forEach((id) => {
-      result += `  ✖️ ${chatNames[targetIds.indexOf(id)] || id}\n`;
+    failList.forEach((f) => {
+      result += `  ✖️ ${chatNames[targetIds.indexOf(f.chatId)] || f.chatId} — <i>${escapeHtml(f.reason)}</i>\n`;
     });
   }
 

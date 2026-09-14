@@ -153,14 +153,37 @@ function chatTypeName(type) {
   return "Noma'lum";
 }
 
+// Bot shu chatda haqiqatan adminligini tekshiradi
+async function botChatAdminStatus(chatId) {
+  const botId = bot.botInfo?.id;
+  if (!botId) return "error";
+  try {
+    const m = await bot.telegram.getChatMember(chatId, botId);
+    if (m && (m.status === "administrator" || m.status === "creator")) return "admin";
+    return "no";
+  } catch (e) {
+    const msg = String(e.message || "");
+    if (/chat not found|user is not a member|not found|kicked|Forbidden: bot/i.test(msg)) return "no";
+    return "error";
+  }
+}
+
 // ═══════════════════════════════════════════════════════════
-//  Foydalanuvchi uchun kanallar ro'yxatini olish
+//  Foydalanuvchi uchun kanallar ro'yxatini olish.
+//  FAQAT bot haqiqatan admin bo'lgan chatlar ko'rsatiladi.
 // ═══════════════════════════════════════════════════════════
 async function getUserChats(userId) {
   const rows = await db.getAllChatsForUser(userId);
   const chats = new Map();
   for (const r of rows) {
-    chats.set(String(r.id), { title: r.title, type: r.type, id: r.id });
+    const status = await botChatAdminStatus(r.id);
+    if (status === "admin") {
+      chats.set(String(r.id), { title: r.title, type: r.type, id: r.id });
+    } else if (status === "no") {
+      // Bot endi admin emas — bazadan ham tozalaymiz
+      db.removeAdminChat(r.id, null).catch(() => {});
+      console.log(`Ko'rsatilmadi (bot admin emas): ${r.title} (${r.id})`);
+    }
   }
   return chats;
 }
@@ -973,10 +996,10 @@ bot.on("my_chat_member", async (ctx) => {
 
       await db.addAdminChat(chatId, title, type, ownerId);
       console.log(`Bot admin bo'ldi: ${title} (${chatId}) egasi: ${ownerId}`);
-    } else if (newStatus === "left" || newStatus === "kicked") {
-      // Bot chiqarilgan/chiqib ketgan — kanalni o'chiramiz (kim chiqarganidan qat'iy nazar)
+    } else {
+      // Bot endi admin emas (member/left/kicked/restricted) — ro'yxatdan o'chiramiz
       await db.removeAdminChat(chatId, null);
-      console.log(`Bot olib tashlandi: ${chat.title || chatId}`);
+      console.log(`Bot admin emas: ${chat.title || chatId} (${newStatus})`);
     }
   } catch (e) {
     console.error("my_chat_member ni qayta ishlashda xatolik:", e.message);

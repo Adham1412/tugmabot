@@ -11,6 +11,11 @@ if (!BOT_TOKEN) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
+bot.catch((err) => {
+  const message = String(err.message || err).replaceAll(BOT_TOKEN, "[BOT_TOKEN]");
+  console.error("Telegram update xatosi:", message);
+});
+
 // ─── ADMIN (faqat statistika uchun) ─────────────────────────
 const ADMIN_IDS = new Set(
   (process.env.ADMIN_CHAT_ID || "")
@@ -1106,9 +1111,6 @@ bot.on("message", async (ctx) => {
 async function main() {
   await db.initDatabase();
 
-  await bot.launch();
-  console.log("Bot ishga tushdi!");
-
   async function shutdown() {
     bot.stop("shutdown");
     await db.close().catch(() => {});
@@ -1117,10 +1119,24 @@ async function main() {
 
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
+
+  bot.launch({}, () => {
+    console.log("Telegram API bilan aloqa o'rnatildi; bot ishga tushmoqda.");
+  }).catch(async (e) => {
+    const message = String(e.message || "").replaceAll(BOT_TOKEN, "[BOT_TOKEN]");
+    if (e.code === 401) {
+      console.error("Telegram bot tokeni yaroqsiz yoki bekor qilingan. BotFather'dan yangi token olib, uni faqat lokal .env faylida yangilang.");
+    } else if (/ETIMEDOUT|ECONNRESET|EHOSTUNREACH/i.test(message)) {
+      console.error("Telegram API ga ulanib bo'lmadi. Internet/firewall ulanishini tekshirib, qayta urinib ko'ring.");
+    }
+    console.error("Bot ishga tushmadi:", message);
+    await db.close().catch(() => {});
+    process.exitCode = 1;
+  });
 }
 
 main().catch((e) => {
-  const message = String(e.message || "");
+  const message = String(e.message || "").replaceAll(BOT_TOKEN, "[BOT_TOKEN]");
   if (/^query(?:Srv|Txt)\s+ETIMEOUT\b/i.test(message)) {
     console.error(
       "MongoDB Atlas DNS yozuvini aniqlab bo'lmadi. DNS server va bot ishlayotgan muhitning tashqi DNS ulanishini tekshiring."

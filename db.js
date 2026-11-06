@@ -1,170 +1,170 @@
-const { Pool } = require("pg");
 require("dotenv").config();
+// Atlas SRV lookup may fail with the local DNS resolver in some environments.
+const dnsServers = (process.env.MONGODB_DNS_SERVERS || "")
+  .split(",")
+  .map((server) => server.trim())
+  .filter(Boolean);
+if (dnsServers.length) require("node:dns").setServers(dnsServers);
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+const { MongoClient } = require("mongodb");
 
-// ─── JADVALLAR (Schema'lar) ────────────────────────────────
-const CREATE_TABLES = `
-  CREATE TABLE IF NOT EXISTS admin_chats (
-    chat_id     TEXT PRIMARY KEY,
-    title       TEXT NOT NULL,
-    type        TEXT DEFAULT 'unknown',
-    owner_id    BIGINT,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-  );
+let client;
+let database;
 
-  CREATE TABLE IF NOT EXISTS users (
-    user_id       BIGINT PRIMARY KEY,
-    first_name    TEXT DEFAULT '',
-    username      TEXT,
-    last_activity TIMESTAMPTZ DEFAULT NOW()
-  );
-
-  CREATE TABLE IF NOT EXISTS posts (
-    id            SERIAL PRIMARY KEY,
-    user_id       BIGINT NOT NULL,
-    text          TEXT,
-    photo_file_id TEXT,
-    video_file_id TEXT,
-    buttons       JSONB DEFAULT '[]'::jsonb,
-    target_chat   TEXT,
-    created_at    TIMESTAMPTZ DEFAULT NOW()
-  );
-`;
-
-// ─── ULANISH ───────────────────────────────────────────────
-async function initDatabase() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL .env faylda topilmadi!");
+function collection(name) {
+  if (!database) {
+    throw new Error("MongoDB bazasi hali ulanmagan.");
   }
-  await pool.query(CREATE_TABLES);
-  console.log("✔ PostgreSQL ulanishi muvaffaqiyatli!");
-  console.log("🗄 PostgreSQL jadvallar tayyor!");
+  return database.collection(name);
 }
 
-// ─── ADMIN CHATS ───────────────────────────────────────────
+async function initDatabase() {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
+    throw new Error("MONGODB_URI .env faylda topilmadi!");
+  }
+
+  client = new MongoClient(uri);
+  await client.connect();
+  database = client.db(process.env.MONGODB_DATABASE || "tugmali_bot");
+
+  await Promise.all([
+    collection("admin_chats").createIndex({ chat_id: 1 }, { unique: true }),
+    collection("users").createIndex({ user_id: 1 }, { unique: true }),
+  ]);
+
+  console.log("✔ MongoDB ulanishi muvaffaqiyatli!");
+  console.log("🗄 MongoDB kolleksiyalari tayyor!");
+}
+
 async function getAllAdminChats(ownerId) {
-  const query = ownerId
-    ? "SELECT chat_id, title, type, owner_id FROM admin_chats WHERE owner_id = $1"
-    : "SELECT chat_id, title, type, owner_id FROM admin_chats";
-  const params = ownerId ? [ownerId] : [];
-  const { rows } = await pool.query(query, params);
-  return rows.map((d) => ({
-    id: d.chat_id,
-    title: d.title,
-    type: d.type || "unknown",
-    owner_id: d.owner_id || null,
+  const filter = ownerId != null ? { owner_id: ownerId } : {};
+  const rows = await collection("admin_chats")
+    .find(filter, { projection: { _id: 0, chat_id: 1, title: 1, type: 1, owner_id: 1 } })
+    .toArray();
+  return rows.map((chat) => ({
+    id: chat.chat_id,
+    title: chat.title,
+    type: chat.type || "unknown",
+    owner_id: chat.owner_id || null,
   }));
 }
 
 async function getAdminChatById(chatId) {
-  const { rows } = await pool.query(
-    "SELECT chat_id, title, type, owner_id FROM admin_chats WHERE chat_id = $1",
-    [String(chatId)]
+  const chat = await collection("admin_chats").findOne(
+    { chat_id: String(chatId) },
+    { projection: { _id: 0, chat_id: 1, title: 1, type: 1, owner_id: 1 } }
   );
-  if (!rows.length) return null;
+  if (!chat) return null;
   return {
-    id: rows[0].chat_id,
-    title: rows[0].title,
-    type: rows[0].type,
-    owner_id: rows[0].owner_id || null,
+    id: chat.chat_id,
+    title: chat.title,
+    type: chat.type,
+    owner_id: chat.owner_id || null,
   };
 }
 
 async function addAdminChat(chatId, title, type, ownerId) {
-  await pool.query(
-    `INSERT INTO admin_chats (chat_id, title, type, owner_id)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (chat_id) DO UPDATE SET
-       title     = EXCLUDED.title,
-       type      = EXCLUDED.type,
-       owner_id  = COALESCE(EXCLUDED.owner_id, admin_chats.owner_id)`,
-    [String(chatId), title, type, ownerId ?? null]
+  const update = {
+    $set: { title, type },
+    $setOnInsert: { chat_id: String(chatId), created_at: new Date() },
+  };
+  if (ownerId != null) {
+    update.$set.owner_id = ownerId;
+  }
+  await collection("admin_chats").updateOne(
+    { chat_id: String(chatId) },
+    update,
+    { upsert: true }
   );
 }
 
 async function setChatOwner(chatId, ownerId) {
-  await pool.query(
-    "UPDATE admin_chats SET owner_id = $2 WHERE chat_id = $1",
-    [String(chatId), ownerId]
+  await collection("admin_chats").updateOne(
+    { chat_id: String(chatId) },
+    { $set: { owner_id: ownerId } }
   );
 }
 
 async function removeAdminChat(chatId, ownerId) {
-  const query = ownerId != null
-    ? "DELETE FROM admin_chats WHERE chat_id = $1 AND owner_id = $2"
-    : "DELETE FROM admin_chats WHERE chat_id = $1";
-  const params = ownerId != null ? [String(chatId), ownerId] : [String(chatId)];
-  await pool.query(query, params);
+  const filter = { chat_id: String(chatId) };
+  if (ownerId != null) {
+    filter.owner_id = ownerId;
+  }
+  await collection("admin_chats").deleteOne(filter);
 }
 
 async function getAllChatsForUser(userId) {
-  const { rows } = await pool.query(
-    "SELECT chat_id, title, type, owner_id FROM admin_chats WHERE owner_id = $1",
-    [userId]
-  );
-  return rows.map((d) => ({
-    id: d.chat_id,
-    title: d.title,
-    type: d.type || "unknown",
-    owner_id: d.owner_id,
+  const rows = await collection("admin_chats")
+    .find(
+      { owner_id: userId },
+      { projection: { _id: 0, chat_id: 1, title: 1, type: 1, owner_id: 1 } }
+    )
+    .toArray();
+  return rows.map((chat) => ({
+    id: chat.chat_id,
+    title: chat.title,
+    type: chat.type || "unknown",
+    owner_id: chat.owner_id,
   }));
 }
 
-// ─── USERS ─────────────────────────────────────────────────
 async function getUserById(userId) {
-  const { rows } = await pool.query(
-    "SELECT user_id, first_name, username, last_activity FROM users WHERE user_id = $1",
-    [Number(userId)]
+  const user = await collection("users").findOne(
+    { user_id: Number(userId) },
+    { projection: { _id: 0, user_id: 1, first_name: 1, username: 1, last_activity: 1 } }
   );
-  return rows[0] || null;
+  return user || null;
 }
 
 async function countUsers() {
-  const { rows } = await pool.query("SELECT COUNT(*)::int AS count FROM users");
-  return rows[0].count;
+  return collection("users").countDocuments();
 }
 
 async function countPosts() {
-  const { rows } = await pool.query("SELECT COUNT(*)::int AS count FROM posts");
-  return rows[0].count;
+  return collection("posts").countDocuments();
 }
 
 async function upsertUser(user) {
-  await pool.query(
-    `INSERT INTO users (user_id, first_name, username, last_activity)
-     VALUES ($1, $2, $3, NOW())
-     ON CONFLICT (user_id) DO UPDATE SET
-       first_name    = EXCLUDED.first_name,
-       username      = EXCLUDED.username,
-       last_activity = NOW()`,
-    [user.id, user.first_name || "", user.username || null]
+  await collection("users").updateOne(
+    { user_id: Number(user.id) },
+    {
+      $set: {
+        first_name: user.first_name || "",
+        username: user.username || null,
+        last_activity: new Date(),
+      },
+    },
+    { upsert: true }
   );
-  // 30 kundan ko'p harakatsiz foydalanuvchilarni tozalash
-  pool
-    .query(`DELETE FROM users WHERE last_activity < NOW() - INTERVAL '30 days'`)
-    .catch(() => {});
+  await collection("users").deleteMany({
+    last_activity: { $lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+  });
 }
 
 async function savePost({ userId, text, photoFileId, videoFileId, buttons, targetChat }) {
-  const { rows } = await pool.query(
-    `INSERT INTO posts (user_id, text, photo_file_id, video_file_id, buttons, target_chat)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, created_at`,
-    [userId, text || null, photoFileId || null, videoFileId || null, JSON.stringify(buttons || []), targetChat || null]
-  );
-  return { id: rows[0].id, created_at: rows[0].created_at };
+  const createdAt = new Date();
+  const result = await collection("posts").insertOne({
+    user_id: Number(userId),
+    text: text || null,
+    photo_file_id: photoFileId || null,
+    video_file_id: videoFileId || null,
+    buttons: buttons || [],
+    target_chat: targetChat || null,
+    created_at: createdAt,
+  });
+  return { id: result.insertedId, created_at: createdAt };
 }
 
-// ─── YAKUNIY CLOSE ─────────────────────────────────────────
 async function close() {
-  await pool.end();
+  if (client) {
+    await client.close();
+    client = undefined;
+    database = undefined;
+  }
 }
 
 module.exports = {
-  pool,
   close,
   initDatabase,
   getAllAdminChats,

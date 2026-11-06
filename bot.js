@@ -1104,13 +1104,9 @@ bot.on("message", async (ctx) => {
 //  ISHGA TUSHIRISH
 // ═══════════════════════════════════════════════════════════
 async function main() {
-  try {
-    await db.initDatabase();
-  } catch (e) {
-    console.error("MongoDB ulanishida xatolik:", e.message);
-  }
+  await db.initDatabase();
 
-  bot.launch();
+  await bot.launch();
   console.log("Bot ishga tushdi!");
 
   async function shutdown() {
@@ -1124,6 +1120,21 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error("Bot ishga tushmadi:", e.message);
+  const message = String(e.message || "");
+  if (/^query(?:Srv|Txt)\s+ETIMEOUT\b/i.test(message)) {
+    console.error(
+      "MongoDB Atlas DNS yozuvini aniqlab bo'lmadi. DNS server va bot ishlayotgan muhitning tashqi DNS ulanishini tekshiring."
+    );
+  } else if (e.code === "EACCES") {
+    console.error(
+      "MongoDB ulanishiga joriy muhit ruxsat bermadi. Botni tashqi tarmoq ulanishiga ruxsat berilgan muhitda ishga tushiring."
+    );
+  } else if (e.code === "ETIMEOUT" || e.name === "MongoServerSelectionError") {
+    console.error(
+      "MongoDB Atlas serveriga ulanish vaqti tugadi. Atlas Network Access sozlamasi bilan birga tarmoq/firewall TCP 27017 chiqish ulanishiga ruxsat berishini tekshiring."
+    );
+  }
+  console.error("Bot ishga tushmadi:", message);
+  db.close().catch(() => {});
   process.exit(1);
 });
